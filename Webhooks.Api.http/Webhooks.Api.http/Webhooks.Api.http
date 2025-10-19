@@ -22,3 +22,14 @@ Content-Type:application/json
   "eventType":"order.created",
   "webhookUrl":"https://webhook.site/3daac562-e733-401a-a523-5cf2be7b7524"
 }
+
+
+###
+
+POST {{Webhooks.Api.http_HostAddress}}/orders
+Content-Type:application/json
+
+{
+   "customerName":"string",
+  "amount":123
+}

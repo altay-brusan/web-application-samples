@@ -1,25 +1,68 @@
-﻿using Webhooks.Api.http.Repositories;
+﻿using Microsoft.EntityFrameworkCore;
+using Webhooks.Api.http.Data;
+using Webhooks.Api.http.Models;
+
 
 namespace Webhooks.Api.http.Services
 {
-    internal sealed class WebhookDispatcher(HttpClient httpClient,
-                                            InMemoryWebhookSubcriptionRepository subcriptionRepository)
+    internal sealed class WebhookDispatcher
     {
-        public async Task DispatchAsync(string eventType, object payload, CancellationToken cancellationToken = default)
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly WebhooksDbContext _dbContext;
+
+        public WebhookDispatcher(IHttpClientFactory httpClientFactory, WebhooksDbContext dbContext)
         {
-            var subscriptions = subcriptionRepository.GetAll(eventType);
+            _httpClientFactory = httpClientFactory;
+            _dbContext = dbContext;
+        }
+
+        public async Task DispatchAsync<T>(string eventType, T data, CancellationToken cancellationToken = default)
+        {
+            var subscriptions = await _dbContext.WebhookSubscriptions.ToListAsync(cancellationToken);
             foreach (var subscription in subscriptions)
             {
-                var request = new 
-                { 
+                using var httpClient = _httpClientFactory.CreateClient();
+
+                var payload = new WebhookPayload<T>
+                {
                     Id = Guid.NewGuid(),
+                    EventType = eventType,
                     SubscriptionId = subscription.Id,
-                    EventType = eventType, 
-                    Data = payload,
-                    CreatedOnUtc = DateTime.UtcNow
+                    Data = data,
+                    Timestamp = DateTime.UtcNow
                 };
-                var response = await httpClient.PostAsJsonAsync(subscription.WebhookUrl, request, cancellationToken);
-                response.EnsureSuccessStatusCode();
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(payload);
+                try
+                {
+                    var response = await httpClient.PostAsJsonAsync(subscription.WebhookUrl, payload, cancellationToken);
+
+                    var attempt = new WebhookDeliveryAttempt
+                    {
+                        Id = Guid.NewGuid(),
+                        WebhookSubscriptionId = subscription.Id,
+                        Timestamp = DateTime.UtcNow,
+                        ResponseStatusCode = (int)response.StatusCode,
+                        Success = response.IsSuccessStatusCode,
+                        Payload = jsonPayload
+                    };
+                    _dbContext.WebhookDeliveryAttempts.Add(attempt);
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                }
+                catch (Exception)
+                {
+                    var attempt = new WebhookDeliveryAttempt
+                    {
+                        Id = Guid.NewGuid(),
+                        WebhookSubscriptionId = subscription.Id,
+                        Timestamp = DateTime.UtcNow,
+                        ResponseStatusCode = null,
+                        Success = false,
+                        Payload = jsonPayload
+                    };
+                    _dbContext.WebhookDeliveryAttempts.Add(attempt);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                }
             }
         }
     }
